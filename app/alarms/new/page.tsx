@@ -3,113 +3,145 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import dayjs, { Dayjs } from "dayjs";
-import { DatePicker, TimePicker } from "@mui/x-date-pickers";
-import { TextField, Button, Stack } from "@mui/material";
+import { DatePicker, TimePicker, LocalizationProvider } from "@mui/x-date-pickers";
+import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
+import { TextField, Button, Stack, Switch, FormControlLabel, ThemeProvider, createTheme } from "@mui/material";
 import { useStore } from "@/lib/useStore";
+import { speak } from "@/lib/speech";
 
-// ——— helpers ————————————————————————————————————————————
-const speak = (text: string) => {
-  if (typeof window === "undefined") return;
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+// Placeholder for Gemini task suggestion
+async function suggestTask(prompt: string) {
+    console.log("Suggesting task with prompt:", prompt);
+    return "Plan out the top 3 priorities for the day.";
 };
 
-async function suggestTask(prompt: string) {
-  const apiKey = ""; // <-- add env var later
-  if (!apiKey) return "";
-  const payload = { contents: [{ role: "user", parts: [{ text: prompt }] }] };
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }
-  );
-  if (!res.ok) return "";
-  const data = await res.json();
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim().replace(/["']/g, "") || "";
-}
-// ————————————————————————————————————————————————
+// Create a dark theme for Material-UI components to match the glass UI
+const darkTheme = createTheme({
+  palette: {
+    mode: 'dark',
+    primary: {
+      main: '#2dd4bf', // Teal color for accents
+    },
+  },
+});
 
 export default function NewAlarmPage() {
   const router = useRouter();
   const addAlarm = useStore((s) => s.addAlarm);
 
   const [date, setDate] = useState<Dayjs | null>(dayjs());
-  const [time, setTime] = useState<Dayjs | null>(dayjs());
-  const [label, setLabel] = useState("");
+  const [time, setTime] = useState<Dayjs | null>(dayjs().add(5, 'minute'));
+  const [task, setLabel] = useState("");
   const [days, setDays] = useState<Record<number, boolean>>({});
+  const [isRepeating, setIsRepeating] = useState(true);
   const [loadingAI, setLoadingAI] = useState(false);
 
   const toggleDay = (d: number) => setDays((p) => ({ ...p, [d]: !p[d] }));
 
   const handleSave = () => {
-    if (!date || !time || !label) return;
+    if (!time || !task || (isRepeating && Object.values(days).every(d => !d)) || (!isRepeating && !date)) {
+        console.error("Validation failed: Please fill all required fields.");
+        return;
+    }
 
-    // combine date & time
-    const when = date.hour(time.hour()).minute(time.minute()).second(0);
-    addAlarm(when.toISOString(), label, Object.keys(days).filter((k) => days[+k]));
+    addAlarm({
+        time: time.format('HH:mm'),
+        task: task,
+        days: isRepeating ? days : {},
+        isOneTime: !isRepeating,
+        oneTimeDate: !isRepeating && date ? date.toISOString() : null,
+    });
 
-    speak(`Alarm set for ${label} at ${when.format("hh:mm A")} on ${when.format("MMMM D")}`);
-    router.push("/"); // back to home or /alarms list
+    speak(`Alarm set for ${task}`);
+    router.push("/");
   };
 
   const getTaskIdea = async () => {
-    setLoadingAI(true);
-    const idea = await suggestTask(`Suggest a short motivating task for an alarm at ${time?.format("hh:mm A")}`);
-    if (idea) setLabel(idea);
-    setLoadingAI(false);
+      setLoadingAI(true);
+      const idea = await suggestTask("Suggest a productive morning task");
+      setLabel(idea);
+      setLoadingAI(false);
   };
 
   const dayLabels = ["S", "M", "T", "W", "T", "F", "S"];
 
+  // Style object for the glass effect on input fields
+  const glassInputStyle = {
+    '& .MuiInputBase-root': {
+      backgroundColor: 'rgba(255, 255, 255, 0.1)',
+      backdropFilter: 'blur(10px)',
+      borderRadius: '12px',
+    },
+    '& .MuiOutlinedInput-notchedOutline': {
+      border: '1px solid rgba(255, 255, 255, 0.2)',
+    },
+    '&:hover .MuiOutlinedInput-notchedOutline': {
+      border: '1px solid rgba(255, 255, 255, 0.4)',
+    },
+  };
+
   return (
-    <div className="p-4 space-y-4 max-w-sm mx-auto">
-      <h1 className="text-xl font-bold text-center">New Alarm</h1>
+    <ThemeProvider theme={darkTheme}>
+      <LocalizationProvider dateAdapter={AdapterDayjs}>
+        {/* This outer div creates a background and centers the glass card */}
+        <div className="flex justify-center items-center min-h-screen p-4 bg-neutral-900">
+            {/* The main glass card with shadow and rounded corners */}
+            <div className="bg-white/4 backdrop-blur-lg rounded-2xl shadow-xl p-6 md:p-8 w-full max-w-md">
+                <Stack spacing={3}>
+                    <h1 className="text-2xl font-bold text-center text-white mb-2">New Alarm</h1>
+                    
+                    <TimePicker 
+                        label="Time" 
+                        value={time} 
+                        onChange={setTime} 
+                        slotProps={{ textField: { fullWidth: true, variant: "outlined", sx: glassInputStyle } }} 
+                    />
 
-      <Stack spacing={2}>
-        <DatePicker
-          label="Date"
-          value={date}
-          onChange={(v) => setDate(v)}
-          slotProps={{ textField: { fullWidth: true, variant: "filled" } }}
-        />
+                    {/* The TextField is now multiline for a description */}
+                    <TextField 
+                        id="filled-multiline-flexible" 
+                        label="Label / Task" 
+                        variant="outlined" 
+                        fullWidth 
+                        multiline
+                        rows={3}
+                        value={task} 
+                        onChange={(e) => setLabel(e.target.value)}
+                        sx={glassInputStyle}
+                    />
 
-        <TimePicker
-          label="Time"
-          value={time}
-          onChange={(v) => setTime(v)}
-          ampm
-          slotProps={{ textField: { fullWidth: true, variant: "filled" } }}
-        />
+                    <Button variant="outlined" disabled={loadingAI} onClick={getTaskIdea} sx={{ py: 1.5 }}>
+                        {loadingAI ? "Thinking..." : "✨ Suggest Idea"}
+                    </Button>
 
-        <TextField
-          label="Label / Task"
-          variant="filled"
-          fullWidth
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-        />
+                    <FormControlLabel
+                        control={<Switch checked={isRepeating} onChange={(e) => setIsRepeating(e.target.checked)} />}
+                        label="Repeat Weekly"
+                        sx={{ justifyContent: 'center' }}
+                    />
 
-        <Button variant="outlined" disabled={loadingAI} onClick={getTaskIdea}>
-          {loadingAI ? "Thinking..." : "✨ Suggest Idea"}
-        </Button>
+                    {isRepeating ? (
+                        <div className="flex justify-center space-x-1 py-1">
+                          {dayLabels.map((l, i) => (
+                            <Button key={i} size="small" variant={days[i] ? "contained" : "outlined"} onClick={() => toggleDay(i)} sx={{ minWidth: 38, height: 38, p: 0 }}>{l}</Button>
+                          ))}
+                        </div>
+                    ) : (
+                        <DatePicker 
+                            label="Date" 
+                            value={date} 
+                            onChange={setDate} 
+                            slotProps={{ textField: { fullWidth: true, variant: "outlined", sx: glassInputStyle } }} 
+                        />
+                    )}
 
-        <div className="flex justify-center space-x-1 py-2">
-          {dayLabels.map((l, i) => (
-            <Button
-              key={i}
-              size="small"
-              variant={days[i] ? "contained" : "outlined"}
-              onClick={() => toggleDay(i)}
-              sx={{ minWidth: 36, p: 0 }}
-            >
-              {l}
-            </Button>
-          ))}
+                    <Button variant="contained" onClick={handleSave} disabled={!task} sx={{ py: 1.5, fontSize: '1rem' }}>
+                        Save Alarm
+                    </Button>
+                </Stack>
+            </div>
         </div>
-
-        <Button variant="contained" onClick={handleSave} disabled={!label}>
-          Save & Speak
-        </Button>
-      </Stack>
-    </div>
+      </LocalizationProvider>
+    </ThemeProvider>
   );
 }

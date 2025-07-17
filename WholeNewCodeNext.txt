@@ -1,0 +1,475 @@
+/*
+================================================================================
+File: /app/page.js
+Description: This is the main entry point for your page. It's kept clean and
+             simply renders the main AlarmClock client component.
+================================================================================
+*/
+import AlarmClock from '@/components/AlarmClock';
+
+export default function HomePage() {
+  return (
+    <main className="bg-gray-900 text-white min-h-screen font-sans antialiased">
+      <AlarmClock />
+    </main>
+  );
+}
+
+
+/*
+================================================================================
+File: /components/AlarmClock.js
+Description: This is the main client component. It uses the "use client"
+             directive and manages the overall state and layout by composing
+             other smaller components.
+================================================================================
+*/
+"use client";
+
+import React, { useState, useEffect } from 'react';
+import useAlarms from '@/hooks/useAlarms';
+import AlarmList from './AlarmList';
+import AddAlarmModal from './AddAlarmModal';
+import RingingAlarmModal from './RingingAlarmModal';
+
+export default function AlarmClock() {
+  const {
+    alarms,
+    toggleAlarm,
+    addAlarm,
+    deleteAlarm,
+    isLoaded,
+  } = useAlarms();
+
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [showAddAlarm, setShowAddAlarm] = useState(false);
+  const [ringingAlarm, setRingingAlarm] = useState(null);
+
+  // Effect to update the current time every second
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Effect to check for alarms
+  useEffect(() => {
+    if (!isLoaded || ringingAlarm) return;
+
+    const checkAlarms = () => {
+      const now = new Date();
+      const currentDay = now.getDay();
+      const currentTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      
+      const triggeredAlarm = alarms.find(alarm =>
+        alarm.enabled &&
+        alarm.time === currentTimeStr &&
+        (Object.keys(alarm.days || {}).length === 0 || (alarm.days && alarm.days[currentDay]))
+      );
+
+      if (triggeredAlarm) {
+        setRingingAlarm(triggeredAlarm);
+        // Temporarily disable alarm to prevent re-triggering
+        toggleAlarm(triggeredAlarm.id, false);
+      }
+    };
+
+    const intervalId = setInterval(checkAlarms, 1000);
+    return () => clearInterval(intervalId);
+  }, [alarms, ringingAlarm, isLoaded, toggleAlarm]);
+
+  const handleDismissAlarm = () => {
+    if (ringingAlarm) {
+      // Re-enable the alarm for the next day/time
+      toggleAlarm(ringingAlarm.id, true);
+      setRingingAlarm(null);
+      if (typeof window !== 'undefined') {
+        window.speechSynthesis.cancel();
+      }
+    }
+  };
+  
+  const handleSaveAlarm = (newAlarmData) => {
+    addAlarm(newAlarmData);
+    setShowAddAlarm(false);
+  };
+
+  // Render a loading state until alarms are loaded from localStorage
+  if (!isLoaded) {
+    return (
+        <div className="flex items-center justify-center min-h-screen">
+            <p className="text-xl text-gray-400">Loading Alarms...</p>
+        </div>
+    );
+  }
+
+  return (
+    <div className="container mx-auto p-4 md:p-8 relative">
+      <header className="text-center my-8">
+        <h1 className="text-6xl md:text-7xl font-bold tracking-wider text-white">
+          {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        </h1>
+        <p className="text-lg text-gray-400 mt-2">
+          {currentTime.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+        </p>
+      </header>
+
+      <main>
+        <div className="max-w-2xl mx-auto">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-2xl font-semibold text-teal-400">Alarms</h2>
+            <button
+              onClick={() => setShowAddAlarm(true)}
+              className="bg-teal-500 hover:bg-teal-600 text-white font-bold py-2 px-4 rounded-full transition duration-300 shadow-lg flex items-center space-x-2"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" /></svg>
+              <span>Add Alarm</span>
+            </button>
+          </div>
+          <AlarmList alarms={alarms} onToggle={toggleAlarm} onDelete={deleteAlarm} />
+        </div>
+      </main>
+
+      {showAddAlarm && (
+        <AddAlarmModal
+          onClose={() => setShowAddAlarm(false)}
+          onSave={handleSaveAlarm}
+        />
+      )}
+      {ringingAlarm && (
+        <RingingAlarmModal
+          alarm={ringingAlarm}
+          onDismiss={handleDismissAlarm}
+        />
+      )}
+    </div>
+  );
+}
+
+
+/*
+================================================================================
+File: /hooks/useAlarms.js
+Description: A custom hook to encapsulate all the logic for managing alarms.
+             This includes loading from/saving to localStorage and CRUD
+             (Create, Read, Update, Delete) operations.
+================================================================================
+*/
+"use client";
+
+import { useState, useEffect, useCallback } from 'react';
+
+const defaultAlarms = [
+    { id: 1, time: '07:00', task: 'Wake up and stretch', days: { 1: true, 2: true, 3: true, 4: true, 5: true }, enabled: true },
+    { id: 2, time: '09:00', task: 'Team Standup Meeting', days: { 1: true, 2: true, 3: true, 4: true, 5: true }, enabled: true },
+    { id: 3, time: '22:30', task: 'Read a chapter of a book', days: { 0: true, 1: true, 2: true, 3: true, 4: true, 5: true, 6: true }, enabled: true },
+];
+
+export default function useAlarms() {
+  const [alarms, setAlarms] = useState([]);
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  // Load alarms from localStorage on initial mount
+  useEffect(() => {
+    try {
+      const savedAlarms = localStorage.getItem('alarms');
+      setAlarms(savedAlarms ? JSON.parse(savedAlarms) : defaultAlarms);
+    } catch (error) {
+      console.error("Could not parse alarms from localStorage", error);
+      setAlarms(defaultAlarms);
+    }
+    setIsLoaded(true);
+  }, []);
+
+  // Save alarms to localStorage whenever they change
+  useEffect(() => {
+    if (isLoaded) {
+      localStorage.setItem('alarms', JSON.stringify(alarms));
+    }
+  }, [alarms, isLoaded]);
+
+  const addAlarm = useCallback((alarmData) => {
+    const newAlarm = { ...alarmData, id: Date.now(), enabled: true };
+    setAlarms(currentAlarms => [...currentAlarms, newAlarm]);
+  }, []);
+
+  const deleteAlarm = useCallback((id) => {
+    setAlarms(currentAlarms => currentAlarms.filter(alarm => alarm.id !== id));
+  }, []);
+
+  const toggleAlarm = useCallback((id, forceState) => {
+    setAlarms(currentAlarms =>
+      currentAlarms.map(alarm =>
+        alarm.id === id
+          ? { ...alarm, enabled: typeof forceState === 'boolean' ? forceState : !alarm.enabled }
+          : alarm
+      )
+    );
+  }, []);
+
+  return { alarms, addAlarm, deleteAlarm, toggleAlarm, isLoaded };
+}
+
+
+/*
+================================================================================
+File: /components/AlarmList.js
+Description: A component dedicated to rendering the list of alarms.
+================================================================================
+*/
+"use client";
+
+import React from 'react';
+import AlarmItem from './AlarmItem';
+
+export default function AlarmList({ alarms, onToggle, onDelete }) {
+  if (alarms.length === 0) {
+    return (
+      <div className="text-center py-10 px-4 bg-gray-800 rounded-lg">
+        <p className="text-gray-400">No alarms set.</p>
+        <p className="text-gray-500 text-sm mt-2">Click "+ Add Alarm" to get started.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {alarms.map(alarm => (
+        <AlarmItem key={alarm.id} alarm={alarm} onToggle={onToggle} onDelete={onDelete} />
+      ))}
+    </div>
+  );
+}
+
+
+/*
+================================================================================
+File: /components/AlarmItem.js
+Description: Renders a single alarm item with its details and controls.
+================================================================================
+*/
+"use client";
+
+import React from 'react';
+import { getDaysString } from '@/lib/utils';
+
+export default function AlarmItem({ alarm, onToggle, onDelete }) {
+  return (
+    <div className={`bg-gray-800 p-4 rounded-lg flex items-center justify-between transition-all duration-300 ${alarm.enabled ? 'shadow-lg shadow-teal-900/20' : 'opacity-50'}`}>
+      <div className="flex-grow">
+        <p className="text-4xl font-mono text-white">{alarm.time}</p>
+        <p className="text-gray-300 mt-1">{alarm.task}</p>
+        <p className="text-sm text-teal-400">{getDaysString(alarm.days)}</p>
+      </div>
+      <div className="flex items-center space-x-4">
+        <button onClick={() => onDelete(alarm.id)} className="text-gray-500 hover:text-red-500 transition-colors">
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+        </button>
+        <label className="relative inline-flex items-center cursor-pointer">
+          <input type="checkbox" checked={alarm.enabled} onChange={() => onToggle(alarm.id)} className="sr-only peer" />
+          <div className="w-14 h-8 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[4px] after:left-[4px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-teal-500"></div>
+        </label>
+      </div>
+    </div>
+  );
+}
+
+
+/*
+================================================================================
+File: /components/AddAlarmModal.js
+Description: The modal component for adding a new alarm.
+================================================================================
+*/
+"use client";
+
+import React, { useState } from 'react';
+import { callGemini } from '@/lib/gemini';
+
+export default function AddAlarmModal({ onClose, onSave }) {
+  const [time, setTime] = useState('08:00');
+  const [task, setTask] = useState('');
+  const [days, setDays] = useState({ 1: true, 2: true, 3: true, 4: true, 5: true });
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const handleDayChange = (day) => {
+    setDays(prev => ({ ...prev, [day]: !prev[day] }));
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!task) return;
+    onSave({ time, task, days });
+  };
+
+  const handleSuggestTask = async () => {
+    setIsGenerating(true);
+    const prompt = `Suggest a short, motivating, and actionable task for an alarm set at ${time}. The task should be something that can be started right away. Keep it under 10 words.`;
+    const suggestedTask = await callGemini(prompt);
+    setTask(suggestedTask.replace(/["']/g, ""));
+    setIsGenerating(false);
+  };
+
+  const dayLabels = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4">
+      <div className="bg-gray-800 rounded-lg p-8 w-full max-w-md m-4 shadow-2xl">
+        <h3 className="text-2xl font-bold mb-6 text-center text-teal-400">Add New Alarm</h3>
+        <form onSubmit={handleSubmit}>
+            <div className="mb-6">
+                <label htmlFor="time" className="block text-gray-400 mb-2">Time</label>
+                <input type="time" id="time" value={time} onChange={e => setTime(e.target.value)} className="w-full p-3 bg-gray-700 rounded-lg border border-gray-600 focus:outline-none focus:border-teal-500 text-center text-3xl appearance-none" required />
+            </div>
+            <div className="mb-6">
+                <label htmlFor="task" className="block text-gray-400 mb-2">Task / Label</label>
+                <div className="flex space-x-2">
+                    <input type="text" id="task" value={task} onChange={e => setTask(e.target.value)} placeholder="e.g., Morning workout" className="flex-grow w-full p-3 bg-gray-700 rounded-lg border border-gray-600 focus:outline-none focus:border-teal-500" required />
+                    <button type="button" onClick={handleSuggestTask} disabled={isGenerating} className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg disabled:bg-indigo-400 disabled:cursor-wait transition-colors">
+                        {isGenerating ? '...' : '✨'}
+                    </button>
+                </div>
+            </div>
+            <div className="mb-8">
+                <label className="block text-gray-400 mb-3 text-center">Repeat</label>
+                <div className="flex justify-center space-x-1 md:space-x-2">
+                    {dayLabels.map((label, index) => (
+                        <button type="button" key={index} onClick={() => handleDayChange(index)} className={`w-10 h-10 rounded-full font-bold transition-all duration-200 border-2 ${days[index] ? 'bg-teal-500 border-teal-400 text-white' : 'bg-gray-700 border-gray-700 hover:bg-gray-600 hover:border-gray-600 text-gray-300'}`}>
+                            {label}
+                        </button>
+                    ))}
+                </div>
+            </div>
+            <div className="flex justify-end space-x-4">
+                <button type="button" onClick={onClose} className="py-2 px-6 bg-gray-600 hover:bg-gray-500 rounded-lg transition-colors">Cancel</button>
+                <button type="submit" disabled={!task} className="py-2 px-6 bg-teal-500 hover:bg-teal-600 rounded-lg transition-colors font-semibold disabled:bg-gray-500 disabled:cursor-not-allowed">Save</button>
+            </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+
+/*
+================================================================================
+File: /components/RingingAlarmModal.js
+Description: The modal that appears when an alarm is actively ringing.
+================================================================================
+*/
+"use client";
+
+import React, { useState, useEffect } from 'react';
+import { callGemini } from '@/lib/gemini';
+import { speak } from '@/lib/speech';
+
+export default function RingingAlarmModal({ alarm, onDismiss }) {
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [motivation, setMotivation] = useState('');
+
+  useEffect(() => {
+    speak(`It's ${alarm.time}. Time for: ${alarm.task}`);
+  }, [alarm]);
+
+  const handleGetMotivation = async () => {
+    setIsGenerating(true);
+    const prompt = `Generate a short, powerful, and unique motivational quote related to the task: "${alarm.task}". Make it sound like a personal reminder.`;
+    const message = await callGemini(prompt);
+    setMotivation(message);
+    speak(message);
+    setIsGenerating(false);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4">
+      <div className="bg-gradient-to-br from-teal-500 to-indigo-600 rounded-lg p-1 shadow-2xl animate-pulse-slow">
+        <div className="bg-gray-800 rounded-lg p-8 w-full max-w-md text-center">
+          <p className="text-6xl font-mono animate-bounce">{alarm.time}</p>
+          <h3 className="text-2xl font-bold mt-4 mb-2 text-white">{alarm.task}</h3>
+          
+          {motivation && <p className="text-indigo-200 mt-4 italic">"{motivation}"</p>}
+
+          <div className="mt-8 flex flex-col space-y-4">
+            <button onClick={handleGetMotivation} disabled={isGenerating} className="w-full py-3 px-6 bg-indigo-500 hover:bg-indigo-600 rounded-lg transition-colors font-semibold text-lg disabled:bg-indigo-400 disabled:cursor-wait">
+              {isGenerating ? 'Thinking...' : '✨ Get a Motivational Boost'}
+            </button>
+            <button onClick={onDismiss} className="w-full py-3 px-6 bg-gray-600 hover:bg-gray-500 rounded-lg transition-colors font-semibold text-lg">
+              Dismiss
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/*
+================================================================================
+File: /lib/gemini.js
+Description: A dedicated utility function for interacting with the Gemini API.
+================================================================================
+*/
+export const callGemini = async (prompt) => {
+    let chatHistory = [{ role: "user", parts: [{ text: prompt }] }];
+    const payload = { contents: chatHistory };
+    const apiKey = ""; // API key is handled by the environment
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+    try {
+        const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            throw new Error(`API call failed with status: ${response.status}`);
+        }
+
+        const result = await response.json();
+        if (result.candidates?.[0]?.content?.parts?.[0]?.text) {
+            return result.candidates[0].content.parts[0].text.trim();
+        } else {
+            console.error("Unexpected response structure:", result);
+            return "I'm sorry, I couldn't think of anything right now.";
+        }
+    } catch (error) {
+        console.error("Error calling Gemini API:", error);
+        return "There was an error connecting to the AI service.";
+    }
+};
+
+
+/*
+================================================================================
+File: /lib/speech.js
+Description: A utility function for text-to-speech.
+================================================================================
+*/
+export const speak = (text) => {
+  if (typeof window === 'undefined' || !window.speechSynthesis) {
+    return;
+  }
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  window.speechSynthesis.speak(utterance);
+};
+
+
+/*
+================================================================================
+File: /lib/utils.js
+Description: General utility functions used across the application.
+================================================================================
+*/
+export const getDaysString = (days) => {
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const validDays = days && typeof days === 'object' ? days : {};
+  const selectedDays = Object.keys(validDays).filter(day => validDays[day]);
+  
+  if (selectedDays.length === 7) return 'Everyday';
+  if (selectedDays.length === 0) return 'Once';
+  if (selectedDays.length === 2 && selectedDays.includes('0') && selectedDays.includes('6')) return 'Weekends';
+  if (selectedDays.length === 5 && !selectedDays.includes('0') && !selectedDays.includes('6')) return 'Weekdays';
+  return selectedDays.map(day => dayNames[parseInt(day)]).join(', ');
+};
